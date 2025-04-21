@@ -37,3 +37,6 @@ extern const line_t lines[4];
 int *available_moves(const char *table);
 char check_win(const char *t);
 fixed_point_t calculate_win_value(char win, char player);
+
+int table_to_hash(const char *table);
+char *hash_to_table(int hash);

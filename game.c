@@ -67,3 +67,17 @@ int *available_moves(const char *table)
         moves[m] = -1;
     return moves;
 }
+
+int table_to_hash(const char *table)
+{
+    int ret = 0;
+    for (int i = 0; i < N_GRIDS; i++) {
+        ret *= 3; // left shift
+        if (table[i] == 'O')
+            ret += 1;
+        else if (table[i] == 'X')
+            ret += 2;
+    }
+
+    return ret;
+}

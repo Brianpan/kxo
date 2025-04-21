@@ -78,7 +78,8 @@ static int major;
 static struct class *kxo_class;
 static struct cdev kxo_cdev;
 
-static char draw_buffer[DRAWBUFFER_SIZE];
+// change to sizeof(int)
+static char draw_buffer[sizeof(int)];
 
 /* Data are stored into a kfifo buffer before passing them to the userspace */
 static DECLARE_KFIFO_PTR(rx_fifo, unsigned char);
@@ -121,28 +122,29 @@ static char table[N_GRIDS];
 /* Draw the board into draw_buffer */
 static int draw_board(char *table)
 {
-    int i = 0, k = 0;
-    draw_buffer[i++] = '\n';
+    // int i = 0, k = 0;
+    // draw_buffer[i++] = '\n';
+    // smp_wmb();
+    // draw_buffer[i++] = '\n';
+    // smp_wmb();
+
+    // while (i < DRAWBUFFER_SIZE) {
+    //     for (int j = 0; j < (BOARD_SIZE << 1) - 1 && k < N_GRIDS; j++) {
+    //         draw_buffer[i++] = j & 1 ? '|' : table[k++];
+    //         smp_wmb();
+    //     }
+    //     draw_buffer[i++] = '\n';
+    //     smp_wmb();
+    //     for (int j = 0; j < (BOARD_SIZE << 1) - 1; j++) {
+    //         draw_buffer[i++] = '-';
+    //         smp_wmb();
+    //     }
+    //     draw_buffer[i++] = '\n';
+    //     smp_wmb();
+    // }
+    int hash = table_to_hash(table);
+    memcpy(draw_buffer, &hash, sizeof(int));
     smp_wmb();
-    draw_buffer[i++] = '\n';
-    smp_wmb();
-
-    while (i < DRAWBUFFER_SIZE) {
-        for (int j = 0; j < (BOARD_SIZE << 1) - 1 && k < N_GRIDS; j++) {
-            draw_buffer[i++] = j & 1 ? '|' : table[k++];
-            smp_wmb();
-        }
-        draw_buffer[i++] = '\n';
-        smp_wmb();
-        for (int j = 0; j < (BOARD_SIZE << 1) - 1; j++) {
-            draw_buffer[i++] = '-';
-            smp_wmb();
-        }
-        draw_buffer[i++] = '\n';
-        smp_wmb();
-    }
-
-
     return 0;
 }
 
