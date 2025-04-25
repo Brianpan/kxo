@@ -7,6 +7,8 @@
 #include <sys/select.h>
 #include <termios.h>
 #include <unistd.h>
+#include <time.h>
+#include <signal.h>
 
 #include "game.h"
 
@@ -73,6 +75,8 @@ static void listen_keyboard_handler(void)
 
     if (read(STDIN_FILENO, &input, 1) == 1) {
         char buf[20];
+        printf("\033[8;1H\033[2K"); // move to row 6
+        printf("\033[2K"); // clean up current line 
         switch (input) {
         case 16: /* Ctrl-P */
             read(attr_fd, buf, 6);
@@ -80,7 +84,7 @@ static void listen_keyboard_handler(void)
             read_attr ^= 1;
             write(attr_fd, buf, 6);
             if (!read_attr)
-                printf("\n\nStopping to display the chess board...\n");
+                printf("Stopping to display the chess board...\n");
             break;
         case 17: /* Ctrl-Q */
             read(attr_fd, buf, 6);
@@ -88,15 +92,34 @@ static void listen_keyboard_handler(void)
             read_attr = false;
             end_attr = true;
             write(attr_fd, buf, 6);
-            printf("\n\nStopping the kernel space tic-tac-toe game...\n");
+            printf("Stopping the kernel space tic-tac-toe game...\n");
             break;
         }
     }
     close(attr_fd);
 }
 
+static char time_buf[32];
+static void draw_time()
+{
+    time_t now = time(NULL);
+    struct tm *tm_now = localtime(&now);
+    strftime(time_buf, sizeof(time_buf), "%Y-%m-%d %H:%M:%S", tm_now);
+    printf("\x1b[0;0H");
+    printf("\x1b[0m");
+    printf("\x1b[1;37m");
+    printf("\x1b[40m");
+    printf(" %s ", time_buf);
+    printf("\x1b[0m");
+    printf("\x1b[0;0H");
+    printf("\x1b[0m");
+    printf("\x1b[1;37m");
+    printf("\x1b[40m\n");
+}
+
 static void draw_board(int hash)
 {
+    printf("\033[2;1H\033[2K"); // move to second line
     char *table = hash_to_table(hash);
     if (!table)
         return;
@@ -151,6 +174,32 @@ static void draw_board(int hash)
         printf(" %2c", 'A' + i);
     printf("\n");
 }
+// timer to print the time
+static void alrm_handler(int signum, siginfo_t *info, void *ucontext)
+{
+    printf("\033[1;1H\033[2K"); /* ASCII escape code to move to first line */
+    draw_time();
+}
+
+static void timer_init()
+{
+    struct sigaction sa = {
+        .sa_handler = (void (*)(int)) alrm_handler,
+        .sa_flags = SA_SIGINFO,
+    };
+    sigfillset(&sa.sa_mask);
+    sigaction(SIGALRM, &sa, NULL);
+}
+
+static void timer_create2(unsigned int usecs)
+{
+    ualarm(usecs, usecs);
+}
+
+static void timer_cancel(void)
+{
+    ualarm(0, 0);
+}
 
 int main(int argc, char *argv[])
 {
@@ -170,6 +219,12 @@ int main(int argc, char *argv[])
     read_attr = true;
     end_attr = false;
 
+    printf("\033[H\033[J"); /* ASCII escape code to clear the screen */
+
+    // timer 
+    timer_init();
+    timer_create2(500000);
+
     while (!end_attr) {
         FD_ZERO(&readset);
         FD_SET(STDIN_FILENO, &readset);
@@ -187,12 +242,12 @@ int main(int argc, char *argv[])
         } else if (read_attr && FD_ISSET(device_fd, &readset)) {
             FD_CLR(device_fd, &readset);
             // print the chess board
-            printf("\033[H\033[J"); /* ASCII escape code to clear the screen */
+            // printf("\033[H\033[J"); /* ASCII escape code to clear the screen */
             // read(device_fd, display_buf, DRAWBUFFER_SIZE);
             // display_buf[DRAWBUFFER_SIZE - 1] = '\0';
             read(device_fd, table, sizeof(int));
             int hash = *(int *)table;
-            draw_board(hash);            
+            draw_board(hash);
         }
     }
 
@@ -201,5 +256,7 @@ int main(int argc, char *argv[])
 
     close(device_fd);
 
+    // clean up timer
+    timer_cancel();
     return 0;
 }
