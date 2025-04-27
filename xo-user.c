@@ -73,7 +73,6 @@ static void print_moves(uint64_t moves)
 {
     // left most 4 bits might be  number of moves
     int move_no = (moves >> 60) & 0x0F;
-    printf("Total moves: %d\n", move_no);
     bool has_zero = false, has_fifteen = false;
 
     for (int m = 0; m < move_no; m++) {

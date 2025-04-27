@@ -49,6 +49,8 @@ static struct kxo_attr attr_obj;
  */
 static struct circ_buf fast_buf;
 
+#define MAX_GAMES (PAGE_SIZE - sizeof(u64))/sizeof(u64)
+
 // define each game moves as u64 since 4*4 board
 // 4 bits for each cell * 16 = 64 bits 
 static u64 game_moves;
@@ -192,26 +194,6 @@ static char table[N_GRIDS];
 /* Draw the board into draw_buffer */
 static int draw_board(char *table)
 {
-    // int i = 0, k = 0;
-    // draw_buffer[i++] = '\n';
-    // smp_wmb();
-    // draw_buffer[i++] = '\n';
-    // smp_wmb();
-
-    // while (i < DRAWBUFFER_SIZE) {
-    //     for (int j = 0; j < (BOARD_SIZE << 1) - 1 && k < N_GRIDS; j++) {
-    //         draw_buffer[i++] = j & 1 ? '|' : table[k++];
-    //         smp_wmb();
-    //     }
-    //     draw_buffer[i++] = '\n';
-    //     smp_wmb();
-    //     for (int j = 0; j < (BOARD_SIZE << 1) - 1; j++) {
-    //         draw_buffer[i++] = '-';
-    //         smp_wmb();
-    //     }
-    //     draw_buffer[i++] = '\n';
-    //     smp_wmb();
-    // }
     int hash = table_to_hash(table);
     memcpy(draw_buffer, &hash, sizeof(int));
     smp_wmb();
@@ -260,7 +242,7 @@ static int finish;
 
 static void write_move(int move)
 {
-    pr_info("kxo: %s: move: %d, cur_move: %d\n", __func__, move, cur_move);
+    // pr_info("kxo: %s: move: %d, cur_move: %d\n", __func__, move, cur_move);
     // 4 bits for each cell
     game_moves |= (((u64) move & 0x0F) << (cur_move << 2));
     cur_move += 1;
@@ -270,7 +252,7 @@ static void pack_move_number(void)
 {
     if (cur_move > 15)
         return;
-    pr_info("kxo: %s: cur_move: %d, %lld\n", __func__, cur_move, game_moves);
+    // pr_info("kxo: %s: cur_move: %d, %lld\n", __func__, cur_move, game_moves);
     // total moves pack to left most 4 bits
     game_moves |= (((u64) cur_move & 0x0F) << 60);
 }
@@ -437,9 +419,10 @@ static void timer_handler(struct timer_list *__timer)
         mutex_unlock(&producer_lock);
 
         // reset the game moves
-        read_lock(&attr_obj.lock);
-        attr_obj.game_no++;
-        read_unlock(&attr_obj.lock);
+        write_lock(&attr_obj.lock);
+        if (attr_obj.game_no < MAX_GAMES)
+            attr_obj.game_no++;
+        write_unlock(&attr_obj.lock);
 
         read_lock(&attr_obj.lock);
         if (attr_obj.display == '1') {
