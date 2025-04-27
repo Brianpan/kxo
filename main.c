@@ -38,18 +38,86 @@ struct kxo_attr {
     char display;
     char resume;
     char end;
+    int game_no;
     rwlock_t lock;
 };
 
 static struct kxo_attr attr_obj;
+
+/* We use an additional "faster" circular buffer to quickly store data from
+ * interrupt context, before adding them to the kfifo.
+ */
+static struct circ_buf fast_buf;
+
+// define each game moves as u64 since 4*4 board
+// 4 bits for each cell * 16 = 64 bits 
+static u64 game_moves;
+static int cur_move;
+
+/* Clear all data from the circular buffer fast_buf */
+static void fast_buf_clear(void)
+{
+    fast_buf.head = fast_buf.tail = 0;
+}
+
+static void fast_buf_put(void)
+{
+    struct circ_buf *ring = &fast_buf;
+    unsigned long head = ring->head;
+
+    unsigned long tail = READ_ONCE(ring->tail);
+
+    if (unlikely(!CIRC_SPACE(head, tail , PAGE_SIZE))) {
+        pr_warn_ratelimited("%s: fast buffer full, will drop some data\n", __func__);
+    }
+    memcpy(&ring->buf[head], &game_moves, sizeof(u64));
+    smp_wmb();
+
+    ring->head = (ring->head + sizeof(u64)) & (PAGE_SIZE - 1);
+}
+
+static u64 fast_buf_get(void)
+{
+    struct circ_buf *ring = &fast_buf;
+    unsigned long head = READ_ONCE(ring->head), tail = ring->tail;
+
+    // nothing to read
+    if (unlikely(!CIRC_CNT(head, tail, PAGE_SIZE)))
+        return 0;
+    
+    smp_rmb();
+    u64 move;
+    memcpy(&move, (void *) &ring->buf[tail], sizeof(u64));
+
+    smp_mb();
+
+    ring->tail = (ring->tail + sizeof(u64)) & (PAGE_SIZE - 1);
+    return move;
+}
 
 static ssize_t kxo_state_show(struct device *dev,
                               struct device_attribute *attr,
                               char *buf)
 {
     read_lock(&attr_obj.lock);
-    int ret = snprintf(buf, 6, "%c %c %c\n", attr_obj.display, attr_obj.resume,
+    int ret = snprintf(buf, 12, "%c %c %c\n\n\n\n\n\n\n", attr_obj.display, attr_obj.resume,
                        attr_obj.end);
+    if (ret < 12)
+        goto failure;
+    pr_info("kxo: game no: %d\n", attr_obj.game_no);
+    memcpy(buf + ret, &(attr_obj.game_no), sizeof(int));
+    ret += sizeof(int);
+    // read the game moves
+    for (int i = 0; i < attr_obj.game_no; i++) {
+        u64 game_move = fast_buf_get();
+        if (game_move == 0)
+            continue;
+        memcpy(buf + ret, &game_move, sizeof(u64));
+        ret += sizeof(u64);
+        if (ret >= PAGE_SIZE)
+            break;
+    }
+failure:
     read_unlock(&attr_obj.lock);
     return ret;
 }
@@ -62,6 +130,13 @@ static ssize_t kxo_state_store(struct device *dev,
     write_lock(&attr_obj.lock);
     sscanf(buf, "%c %c %c", &(attr_obj.display), &(attr_obj.resume),
            &(attr_obj.end));
+    pr_info("kxo: display: %c, resume: %c, end: %c\n", attr_obj.display,
+            attr_obj.resume, attr_obj.end);
+    // if end is 1, reset the circular buffer and game no
+    if (attr_obj.end == '1') {
+        fast_buf_clear();
+        attr_obj.game_no = 0;
+    }
     write_unlock(&attr_obj.lock);
     return count;
 }
@@ -112,11 +187,6 @@ static DEFINE_MUTEX(producer_lock);
  */
 static DEFINE_MUTEX(consumer_lock);
 
-/* We use an additional "faster" circular buffer to quickly store data from
- * interrupt context, before adding them to the kfifo.
- */
-static struct circ_buf fast_buf;
-
 static char table[N_GRIDS];
 
 /* Draw the board into draw_buffer */
@@ -146,12 +216,6 @@ static int draw_board(char *table)
     memcpy(draw_buffer, &hash, sizeof(int));
     smp_wmb();
     return 0;
-}
-
-/* Clear all data from the circular buffer fast_buf */
-static void fast_buf_clear(void)
-{
-    fast_buf.head = fast_buf.tail = 0;
 }
 
 /* Workqueue handler: executed by a kernel thread */
@@ -194,6 +258,23 @@ static void drawboard_work_func(struct work_struct *w)
 static char turn;
 static int finish;
 
+static void write_move(int move)
+{
+    pr_info("kxo: %s: move: %d, cur_move: %d\n", __func__, move, cur_move);
+    // 4 bits for each cell
+    game_moves |= (((u64) move & 0x0F) << (cur_move << 2));
+    cur_move += 1;
+}
+
+static void pack_move_number(void)
+{
+    if (cur_move > 15)
+        return;
+    pr_info("kxo: %s: cur_move: %d, %lld\n", __func__, cur_move, game_moves);
+    // total moves pack to left most 4 bits
+    game_moves |= (((u64) cur_move & 0x0F) << 60);
+}
+
 static void ai_one_work_func(struct work_struct *w)
 {
     ktime_t tv_start, tv_end;
@@ -215,7 +296,8 @@ static void ai_one_work_func(struct work_struct *w)
 
     if (move != -1)
         WRITE_ONCE(table[move], 'O');
-
+    
+    write_move(move);
     WRITE_ONCE(turn, 'X');
     WRITE_ONCE(finish, 1);
     smp_wmb();
@@ -250,6 +332,7 @@ static void ai_two_work_func(struct work_struct *w)
     if (move != -1)
         WRITE_ONCE(table[move], 'X');
 
+    write_move(move);
     WRITE_ONCE(turn, 'O');
     WRITE_ONCE(finish, 1);
     smp_wmb();
@@ -344,6 +427,20 @@ static void timer_handler(struct timer_list *__timer)
         ai_game();
         mod_timer(&timer, jiffies + msecs_to_jiffies(delay));
     } else {
+        mutex_lock(&producer_lock);
+        // number of moves in the left 4 most bits
+        pack_move_number();
+        fast_buf_put();
+        smp_wmb();
+        game_moves = 0;
+        cur_move = 0;
+        mutex_unlock(&producer_lock);
+
+        // reset the game moves
+        read_lock(&attr_obj.lock);
+        attr_obj.game_no++;
+        read_unlock(&attr_obj.lock);
+
         read_lock(&attr_obj.lock);
         if (attr_obj.display == '1') {
             int cpu = get_cpu();
@@ -516,6 +613,8 @@ static int __init kxo_init(void)
     memset(table, ' ', N_GRIDS);
     turn = 'O';
     finish = 1;
+    game_moves = 0;
+    cur_move = 0;
 
     attr_obj.display = '1';
     attr_obj.resume = '1';

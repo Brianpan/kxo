@@ -9,6 +9,7 @@
 #include <unistd.h>
 #include <time.h>
 #include <signal.h>
+#include <stdint.h>
 
 #include "game.h"
 
@@ -68,18 +69,69 @@ static void raw_mode_enable(void)
 
 static bool read_attr, end_attr;
 
+static void print_moves(uint64_t moves)
+{
+    // left most 4 bits might be  number of moves
+    int move_no = (moves >> 60) & 0x0F;
+    printf("Total moves: %d\n", move_no);
+    bool has_zero = false, has_fifteen = false;
+
+    for (int m = 0; m < move_no; m++) {
+        int step = (moves >> (m << 2)) & 0x0F;
+        if (step == 0)
+            has_zero = true;
+        if (step == 15)
+            has_fifteen = true;
+        printf("%c%d", 'A' + GET_COL(step), 1 + GET_ROW(step));
+        if (m != move_no - 1)
+            printf(" -> ");
+    }
+    // special case for whether 15 is included in first 15 moves
+    // if not included, print 15
+    if (move_no == (N_GRIDS - 1)  && !has_fifteen) {
+        printf(" -> ");
+        printf("%c%c", 'A' + GET_COL(15), '1' + GET_ROW(15));
+    } else {
+        int step = (moves >> (move_no << 2)) & 0x0F;
+        // has 2 zero means move_no is correct
+        if (step == 0 && has_zero)
+            return;
+        int next_step = (moves >> ((move_no + 1) << 2)) & 0x0F;
+        if (next_step == 0 && step == 0)
+            return;
+        // this case of full board case
+        for (int i = move_no; i < N_GRIDS; i++) {
+            int step = moves >> (i << 2) & 0x0F;
+            printf(" -> ");
+            printf("%c%c", 'A' + GET_COL(step), '1' + GET_ROW(step));
+        }
+    } 
+}
+
+static int print_game_board(int game_no, char *table)
+{
+    while (game_no > 0) {
+        uint64_t game_moves;
+        memcpy(&game_moves, table, sizeof(uint64_t));
+        printf("Moves: ");
+        print_moves(game_moves);
+        printf("\n");
+        game_no--;
+        table += sizeof(uint64_t);
+    }
+}
 static void listen_keyboard_handler(void)
 {
     int attr_fd = open(XO_DEVICE_ATTR_FILE, O_RDWR);
     char input;
 
     if (read(STDIN_FILENO, &input, 1) == 1) {
-        char buf[20];
+        char buf[4096];
         printf("\033[8;1H\033[2K"); // move to row 6
         printf("\033[2K"); // clean up current line 
         switch (input) {
         case 16: /* Ctrl-P */
-            read(attr_fd, buf, 6);
+            read(attr_fd, buf, 4096);
             buf[0] = (buf[0] - '0') ? '0' : '1';
             read_attr ^= 1;
             write(attr_fd, buf, 6);
@@ -87,12 +139,15 @@ static void listen_keyboard_handler(void)
                 printf("Stopping to display the chess board...\n");
             break;
         case 17: /* Ctrl-Q */
-            read(attr_fd, buf, 6);
+            read(attr_fd, buf, 4096);
+            int game_no;
+            memcpy(&game_no, buf + 12, sizeof(int));
+            print_game_board(game_no, buf + 12 + sizeof(int));
             buf[4] = '1';
             read_attr = false;
             end_attr = true;
             write(attr_fd, buf, 6);
-            printf("Stopping the kernel space tic-tac-toe game...\n");
+            printf("game no: %d, Stopping the kernel space tic-tac-toe game...\n", game_no);
             break;
         }
     }
