@@ -28,6 +28,9 @@ MODULE_DESCRIPTION("In-kernel Tic-Tac-Toe game engine");
 
 #define DEV_NAME "kxo"
 
+#define IOCTL_READ_SIZE 0
+#define IOCTL_READ_LIST 1 
+
 #define NR_KMLDRV 1
 
 static int delay = 100; /* time (in ms) to generate an event */
@@ -102,25 +105,24 @@ static ssize_t kxo_state_show(struct device *dev,
                               char *buf)
 {
     read_lock(&attr_obj.lock);
-    int ret = snprintf(buf, 12, "%c %c %c\n\n\n\n\n\n\n", attr_obj.display, attr_obj.resume,
+    int ret = snprintf(buf, 6, "%c %c %c\n", attr_obj.display, attr_obj.resume,
                        attr_obj.end);
-    if (ret < 12)
-        goto failure;
-    pr_info("kxo: game no: %d\n", attr_obj.game_no);
-    memcpy(buf + ret, &(attr_obj.game_no), sizeof(int));
-    ret += sizeof(int);
-    // read the game moves
-    for (int i = 0; i < attr_obj.game_no; i++) {
-        u64 game_move = fast_buf_get();
-        if (game_move == 0)
-            continue;
-        memcpy(buf + ret, &game_move, sizeof(u64));
-        ret += sizeof(u64);
-        if (ret >= PAGE_SIZE)
-            break;
-    }
-failure:
+    // int game_no = attr_obj.game_no;
+    // memcpy(buf + ret, &game_no, sizeof(int));
+    // ret += sizeof(int);
+    
+    // // read the game moves
+    // for (int i = 0; i < attr_obj.game_no; i++) {
+    //     u64 game_move = fast_buf_get();
+    //     if (game_move == 0)
+    //         continue;
+    //     memcpy(buf + ret, &game_move, sizeof(u64));
+    //     ret += sizeof(u64);
+    //     if (ret >= PAGE_SIZE)
+    //         break;
+    // }
     read_unlock(&attr_obj.lock);
+    
     return ret;
 }
 
@@ -134,11 +136,6 @@ static ssize_t kxo_state_store(struct device *dev,
            &(attr_obj.end));
     pr_info("kxo: display: %c, resume: %c, end: %c\n", attr_obj.display,
             attr_obj.resume, attr_obj.end);
-    // if end is 1, reset the circular buffer and game no
-    if (attr_obj.end == '1') {
-        fast_buf_clear();
-        attr_obj.game_no = 0;
-    }
     write_unlock(&attr_obj.lock);
     return count;
 }
@@ -523,6 +520,29 @@ static int kxo_release(struct inode *inode, struct file *filp)
     return 0;
 }
 
+// ioctl interface
+static long kxo_ioctl(struct file *fp, unsigned int cmd, unsigned long arg)
+{
+    int ret;
+    switch (cmd & 1) {
+    case IOCTL_READ_SIZE:
+        int game_no;
+        write_lock(&attr_obj.lock);
+        game_no = attr_obj.game_no;
+        attr_obj.game_no = 0;
+        write_unlock(&attr_obj.lock);
+        return game_no;
+        break;
+    case IOCTL_READ_LIST:
+        u64 game_move = fast_buf_get();
+        ret = copy_to_user((void*) arg, &game_move, sizeof(u64));
+        break;
+    default:
+        ret = -ENOTTY;
+    }
+    return ret;
+}
+
 static const struct file_operations kxo_fops = {
 #if LINUX_VERSION_CODE < KERNEL_VERSION(6, 4, 0)
     .owner = THIS_MODULE,
@@ -531,6 +551,7 @@ static const struct file_operations kxo_fops = {
     .llseek = no_llseek,
     .open = kxo_open,
     .release = kxo_release,
+    .unlocked_ioctl = kxo_ioctl,
 };
 
 static int __init kxo_init(void)

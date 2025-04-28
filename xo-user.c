@@ -4,6 +4,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/ioctl.h>
 #include <sys/select.h>
 #include <termios.h>
 #include <unistd.h>
@@ -16,6 +17,9 @@
 #define XO_STATUS_FILE "/sys/module/kxo/initstate"
 #define XO_DEVICE_FILE "/dev/kxo"
 #define XO_DEVICE_ATTR_FILE "/sys/class/kxo/kxo/kxo_state"
+
+#define IOCTL_READ_SIZE 0
+#define IOCTL_READ_LIST 1
 
 char *hash_to_table(int hash)
 {
@@ -107,16 +111,25 @@ static void print_moves(uint64_t moves)
     } 
 }
 
-static int print_game_board(int game_no, char *table)
+static void print_game_moves(int fd)
 {
+    int game_no = ioctl(fd, IOCTL_READ_SIZE, 0);
+    if (game_no <= 0) {
+        printf("Error with ioctl system call\n");
+        return;
+    }
+
     while (game_no > 0) {
         uint64_t game_moves;
-        memcpy(&game_moves, table, sizeof(uint64_t));
+        int ret = ioctl(fd, IOCTL_READ_LIST, &game_moves);
+        if (ret < 0) {
+            printf("Error with ioctl system call\n");
+            return;
+        }
         printf("Moves: ");
         print_moves(game_moves);
         printf("\n");
         game_no--;
-        table += sizeof(uint64_t);
     }
 }
 static void listen_keyboard_handler(void)
@@ -125,12 +138,12 @@ static void listen_keyboard_handler(void)
     char input;
 
     if (read(STDIN_FILENO, &input, 1) == 1) {
-        char buf[4096];
+        char buf[6];
         printf("\033[8;1H\033[2K"); // move to row 6
         printf("\033[2K"); // clean up current line 
         switch (input) {
         case 16: /* Ctrl-P */
-            read(attr_fd, buf, 4096);
+            read(attr_fd, buf, 6);
             buf[0] = (buf[0] - '0') ? '0' : '1';
             read_attr ^= 1;
             write(attr_fd, buf, 6);
@@ -138,15 +151,12 @@ static void listen_keyboard_handler(void)
                 printf("Stopping to display the chess board...\n");
             break;
         case 17: /* Ctrl-Q */
-            read(attr_fd, buf, 4096);
-            int game_no;
-            memcpy(&game_no, buf + 12, sizeof(int));
-            print_game_board(game_no, buf + 12 + sizeof(int));
+            read(attr_fd, buf, 6);
             buf[4] = '1';
             read_attr = false;
             end_attr = true;
             write(attr_fd, buf, 6);
-            printf("game no: %d, Stopping the kernel space tic-tac-toe game...\n", game_no);
+            printf("Stopping the kernel space tic-tac-toe game...\n");
             break;
         }
     }
@@ -295,15 +305,14 @@ int main(int argc, char *argv[])
             listen_keyboard_handler();
         } else if (read_attr && FD_ISSET(device_fd, &readset)) {
             FD_CLR(device_fd, &readset);
-            // print the chess board
-            // printf("\033[H\033[J"); /* ASCII escape code to clear the screen */
-            // read(device_fd, display_buf, DRAWBUFFER_SIZE);
-            // display_buf[DRAWBUFFER_SIZE - 1] = '\0';
             read(device_fd, table, sizeof(int));
             int hash = *(int *)table;
             draw_board(hash);
         }
     }
+
+    // exit from program and print the game moves
+    print_game_moves(device_fd);
 
     raw_mode_disable();
     fcntl(STDIN_FILENO, F_SETFL, flags);
