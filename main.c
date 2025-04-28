@@ -107,20 +107,6 @@ static ssize_t kxo_state_show(struct device *dev,
     read_lock(&attr_obj.lock);
     int ret = snprintf(buf, 6, "%c %c %c\n", attr_obj.display, attr_obj.resume,
                        attr_obj.end);
-    // int game_no = attr_obj.game_no;
-    // memcpy(buf + ret, &game_no, sizeof(int));
-    // ret += sizeof(int);
-    
-    // // read the game moves
-    // for (int i = 0; i < attr_obj.game_no; i++) {
-    //     u64 game_move = fast_buf_get();
-    //     if (game_move == 0)
-    //         continue;
-    //     memcpy(buf + ret, &game_move, sizeof(u64));
-    //     ret += sizeof(u64);
-    //     if (ret >= PAGE_SIZE)
-    //         break;
-    // }
     read_unlock(&attr_obj.lock);
     
     return ret;
