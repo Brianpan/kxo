@@ -27,8 +27,8 @@ char *hash_to_table(int hash)
     if (!table)
         return NULL;
     for (int i = N_GRIDS - 1; i >= 0; i--) {
-        table[i] = " OX"[hash % 3];
-        hash /= 3;
+        table[i] = " OX"[hash & 3];
+        hash = hash >> 2;
     }
 
     return table;
